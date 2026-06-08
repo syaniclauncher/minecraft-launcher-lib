@@ -2,11 +2,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2019-2025 JakobDev <jakobdev@gmx.de> and contributors
 # SPDX-License-Identifier: BSD-2-Clause
 "install allows you to install minecraft."
-from ._helper import download_file, parse_rule_list, inherit_json, empty, get_user_agent, check_path_inside_minecraft_directory
+import asyncio
+import aiohttp
+from ._helper import download_file, parse_rule_list, inherit_json, empty, get_user_agent, check_path_inside_minecraft_directory, create_download_session, _download_file_aiohttp, _should_use_async_download_backend
 from ._internal_types.shared_types import ClientJson, ClientJsonLibrary
 from .natives import extract_natives_file, get_natives
 from ._internal_types.install_types import AssetsJson
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from .runtime import install_jvm_runtime
 from .exceptions import VersionNotFound
 from .types import CallbackDict
@@ -26,7 +29,12 @@ def install_libraries(
     """
     Install all libraries
     """
-    session = requests.session()
+    if _should_use_async_download_backend():
+        asyncio.run(_install_libraries_async(id, libraries, path, callback, max_workers))
+        return
+
+    worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
+    session = create_download_session(worker_count)
     callback.get("setStatus", empty)("Download Libraries")
     callback.get("setMax", empty)(len(libraries) - 1)
 
@@ -93,11 +101,84 @@ def install_libraries(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit task for every library
         futures = [executor.submit(download_library, i) for i in libraries]
-        for future in futures:
+        for future in as_completed(futures):
             # Wait until the task is completed
             future.result()
             count += 1
             callback.get("setProgress", empty)(count)
+
+
+async def _install_libraries_async(
+        id: str,
+        libraries: list[ClientJsonLibrary],
+        path: str,
+        callback: CallbackDict,
+        max_workers: int | None = None,) -> None:
+    """
+    Async install of all libraries using aiohttp.
+    """
+    worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=30)
+    connector = aiohttp.TCPConnector(limit=worker_count, limit_per_host=worker_count, ttl_dns_cache=300)
+    session = aiohttp.ClientSession(headers={"user-agent": get_user_agent()}, timeout=timeout, connector=connector)
+    callback.get("setStatus", empty)("Download Libraries")
+    callback.get("setMax", empty)(len(libraries) - 1)
+
+    async def download_library(i: ClientJsonLibrary) -> None:
+        if "rules" in i and not parse_rule_list(i["rules"], {}):
+            return
+
+        current_path = os.path.join(path, "libraries")
+        if "url" in i:
+            download_url = i["url"][:-1] if i["url"].endswith("/") else i["url"]
+        else:
+            download_url = "https://libraries.minecraft.net"
+
+        try:
+            lib_path, name, version = i["name"].split(":")[0:3]
+        except ValueError:
+            return
+
+        for lib_part in lib_path.split("."):
+            current_path = os.path.join(current_path, lib_part)
+            download_url = f"{download_url}/{lib_part}"
+
+        try:
+            version, fileend = version.split("@")
+        except ValueError:
+            fileend = "jar"
+
+        jar_filename = f"{name}-{version}.{fileend}"
+        download_url = f"{download_url}/{name}/{version}/{jar_filename}"
+        current_path = os.path.join(current_path, name, version)
+        native = get_natives(i)
+        jar_filename_native = f"{name}-{version}-{native}.jar" if native != "" else ""
+
+        try:
+            await _download_file_aiohttp(download_url, os.path.join(current_path, jar_filename), callback=callback, session=session, minecraft_directory=path)
+        except Exception:
+            pass
+
+        if "downloads" not in i:
+            if "extract" in i and jar_filename_native != "":
+                extract_natives_file(os.path.join(current_path, jar_filename_native), os.path.join(path, "versions", id, "natives"), i["extract"])
+            return
+
+        if "artifact" in i["downloads"] and i["downloads"]["artifact"]["url"] != "" and "path" in i["downloads"]["artifact"]:
+            await _download_file_aiohttp(i["downloads"]["artifact"]["url"], os.path.join(path, "libraries", i["downloads"]["artifact"]["path"]), callback, sha1=i["downloads"]["artifact"]["sha1"], session=session, minecraft_directory=path)
+        if native != "":
+            await _download_file_aiohttp(i["downloads"]["classifiers"][native]["url"], os.path.join(current_path, jar_filename_native), callback, sha1=i["downloads"]["classifiers"][native]["sha1"], session=session, minecraft_directory=path)  # type: ignore
+            extract_natives_file(os.path.join(current_path, jar_filename_native), os.path.join(path, "versions", id, "natives"), i.get("extract", {"exclude": []}))  # type: ignore[arg-type]
+
+    count = 0
+    try:
+        tasks = [asyncio.create_task(download_library(i)) for i in libraries]
+        for future in asyncio.as_completed(tasks):
+            await future
+            count += 1
+            callback.get("setProgress", empty)(count)
+    finally:
+        await session.close()
 
 
 def install_assets(
@@ -112,8 +193,13 @@ def install_assets(
     if "assetIndex" not in data:
         return
 
+    if _should_use_async_download_backend():
+        asyncio.run(_install_assets_async(data, path, callback, max_workers))
+        return
+
     callback.get("setStatus", empty)("Download Assets")
-    session = requests.session()
+    worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
+    session = create_download_session(worker_count)
 
     # Download all assets
     download_file(data["assetIndex"]["url"], os.path.join(path, "assets", "indexes", data["assets"] + ".json"), callback, sha1=data["assetIndex"]["sha1"], session=session)
@@ -135,11 +221,46 @@ def install_assets(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit task for every library
         futures = [executor.submit(download_asset, filehash) for filehash in assets]
-        for future in futures:
+        for future in as_completed(futures):
             # Wait until the task is completed
             future.result()
             count += 1
             callback.get("setProgress", empty)(count)
+
+
+async def _install_assets_async(
+        data: ClientJson,
+        path: str,
+        callback: CallbackDict,
+        max_workers: int | None = None,) -> None:
+    """
+    Async install of all assets using aiohttp.
+    """
+    callback.get("setStatus", empty)("Download Assets")
+    worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=30)
+    connector = aiohttp.TCPConnector(limit=worker_count, limit_per_host=worker_count, ttl_dns_cache=300)
+    session = aiohttp.ClientSession(headers={"user-agent": get_user_agent()}, timeout=timeout, connector=connector)
+
+    try:
+        await _download_file_aiohttp(data["assetIndex"]["url"], os.path.join(path, "assets", "indexes", data["assets"] + ".json"), callback, sha1=data["assetIndex"]["sha1"], session=session, minecraft_directory=path)
+        with open(os.path.join(path, "assets", "indexes", data["assets"] + ".json")) as f:
+            assets_data: AssetsJson = json.load(f)
+
+        assets = set(val["hash"] for val in assets_data["objects"].values())
+        callback.get("setMax", empty)(len(assets) - 1)
+        count = 0
+
+        async def download_asset(filehash: str) -> None:
+            await _download_file_aiohttp("https://resources.download.minecraft.net/" + filehash[:2] + "/" + filehash, os.path.join(path, "assets", "objects", filehash[:2], filehash), callback, sha1=filehash, session=session, minecraft_directory=path)
+
+        tasks = [asyncio.create_task(download_asset(filehash)) for filehash in assets]
+        for future in asyncio.as_completed(tasks):
+            await future
+            count += 1
+            callback.get("setProgress", empty)(count)
+    finally:
+        await session.close()
 
 
 def do_version_install(versionid: str, path: str, callback: CallbackDict, url: str | None = None, sha1: str | None = None) -> None:

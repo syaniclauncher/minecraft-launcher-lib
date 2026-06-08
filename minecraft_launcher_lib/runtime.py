@@ -2,11 +2,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2019-2025 JakobDev <jakobdev@gmx.de> and contributors
 # SPDX-License-Identifier: BSD-2-Clause
 "runtime allows to install the java runtime. This module is used by :func:`~minecraft_launcher_lib.install.install_minecraft_version`, so you don't need to use it in your code most of the time."
-from ._helper import get_user_agent, download_file, empty, get_sha1_hash, check_path_inside_minecraft_directory, get_client_json
+import asyncio
+import aiohttp
+from ._helper import get_user_agent, download_file, empty, get_sha1_hash, check_path_inside_minecraft_directory, get_client_json, create_download_session, _download_file_aiohttp, _should_use_async_download_backend
 from ._internal_types.runtime_types import RuntimeListJson, PlatformManifestJson, _PlatformManifestJsonFile
 from .types import CallbackDict, JvmRuntimeInformation, VersionRuntimeInformation
 from .exceptions import VersionNotFound, PlatformNotSupported
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 import subprocess
 import datetime
 import requests
@@ -103,6 +106,10 @@ def install_jvm_runtime(
     if callback is None:
         callback = {}
 
+    if _should_use_async_download_backend():
+        asyncio.run(_install_jvm_runtime_async(jvm_version, minecraft_directory, callback, max_workers))
+        return
+
     manifest_data: RuntimeListJson = requests.get(_JVM_MANIFEST_URL, headers={"user-agent": get_user_agent()}).json()
     platform_string = _get_jvm_platform_string()
     # Check if the jvm version exists
@@ -113,7 +120,8 @@ def install_jvm_runtime(
         return
     platform_manifest: PlatformManifestJson = requests.get(manifest_data[platform_string][jvm_version][0]["manifest"]["url"], headers={"user-agent": get_user_agent()}).json()
     base_path = os.path.join(minecraft_directory, "runtime", jvm_version, platform_string, jvm_version)
-    session = requests.session()
+    worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
+    session = create_download_session(worker_count)
     file_list: list[str] = []
 
     def install_runtime_file(key: str, value: _PlatformManifestJsonFile) -> None:
@@ -159,19 +167,85 @@ def install_jvm_runtime(
             executor.submit(install_runtime_file, key, value)
             for key, value in platform_manifest["files"].items()
         ]
-        for future in futures:
+        for future in as_completed(futures):
             future.result()
             count += 1
             callback.get("setProgress", empty)(count)
 
-    # Create the .version file
+
+async def _install_jvm_runtime_async(
+        jvm_version: str,
+        minecraft_directory: str | os.PathLike,
+        callback: CallbackDict | None = None,
+        max_workers: int | None = None) -> None:
+    """
+    Async runtime installer using aiohttp.
+    """
+    if callback is None:
+        callback = {}
+
+    manifest_data: RuntimeListJson = requests.get(_JVM_MANIFEST_URL, headers={"user-agent": get_user_agent()}).json()
+    platform_string = _get_jvm_platform_string()
+    if jvm_version not in manifest_data[platform_string]:
+        raise VersionNotFound(jvm_version)
+    if len(manifest_data[platform_string][jvm_version]) == 0:
+        return
+
+    platform_manifest: PlatformManifestJson = requests.get(manifest_data[platform_string][jvm_version][0]["manifest"]["url"], headers={"user-agent": get_user_agent()}).json()
+    base_path = os.path.join(minecraft_directory, "runtime", jvm_version, platform_string, jvm_version)
+    worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=30)
+    connector = aiohttp.TCPConnector(limit=worker_count, limit_per_host=worker_count, ttl_dns_cache=300)
+    session = aiohttp.ClientSession(headers={"user-agent": get_user_agent()}, timeout=timeout, connector=connector)
+    file_list: list[str] = []
+
+    async def install_runtime_file(key: str, value: _PlatformManifestJsonFile) -> None:
+        current_path = os.path.join(base_path, key)
+        check_path_inside_minecraft_directory(minecraft_directory, current_path)
+
+        if value["type"] == "file":
+            if "lzma" in value["downloads"]:
+                await _download_file_aiohttp(value["downloads"]["lzma"]["url"], current_path, sha1=value["downloads"]["raw"]["sha1"], callback=callback, lzma_compressed=True, session=session)
+            else:
+                await _download_file_aiohttp(value["downloads"]["raw"]["url"], current_path, sha1=value["downloads"]["raw"]["sha1"], callback=callback, session=session)
+
+            if value["executable"]:
+                try:
+                    subprocess.run(["chmod", "+x", current_path])
+                except FileNotFoundError:
+                    pass
+            file_list.append(key)
+
+        elif value["type"] == "directory":
+            try:
+                os.makedirs(current_path)
+            except Exception:
+                pass
+
+        elif value["type"] == "link":
+            check_path_inside_minecraft_directory(minecraft_directory, os.path.join(base_path, value["target"]))
+            os.makedirs(os.path.dirname(current_path), exist_ok=True)
+            try:
+                os.symlink(value["target"], current_path)
+            except Exception:
+                pass
+
+    callback.get("setMax", empty)(len(platform_manifest["files"]) - 1)
+    count = 0
+    try:
+        tasks = [asyncio.create_task(install_runtime_file(key, value)) for key, value in platform_manifest["files"].items()]
+        for future in asyncio.as_completed(tasks):
+            await future
+            count += 1
+            callback.get("setProgress", empty)(count)
+    finally:
+        await session.close()
+
     version_path = os.path.join(minecraft_directory, "runtime", jvm_version, platform_string, ".version")
     check_path_inside_minecraft_directory(minecraft_directory, version_path)
     with open(version_path, "w", encoding="utf-8") as f:
         f.write(manifest_data[platform_string][jvm_version][0]["version"]["name"])
 
-    # Writes the .sha1 file
-    # It has the structure {path} /#// {sha1} {creation time in nanoseconds}
     sha1_path = os.path.join(minecraft_directory, "runtime", jvm_version, platform_string, f"{jvm_version}.sha1")
     check_path_inside_minecraft_directory(minecraft_directory, sha1_path)
     with open(sha1_path, "w", encoding="utf-8") as f:

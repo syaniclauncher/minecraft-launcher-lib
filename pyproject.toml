@@ -34,7 +34,8 @@ classifiers = [
   "Typing :: Typed"
 ]
 dependencies = [
-  "requests"
+  "requests",
+  "aiohttp"
 ]
 dynamic = ["version"]
 

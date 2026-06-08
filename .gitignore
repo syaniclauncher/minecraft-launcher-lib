@@ -24,3 +24,6 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+# internal testing
+/lib_testing

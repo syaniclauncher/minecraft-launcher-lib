@@ -7,9 +7,12 @@ from ._internal_types.shared_types import ClientJson, ClientJsonRule, ClientJson
 from ._internal_types.helper_types import RequestsResponseCache, MavenMetadata
 from .types import MinecraftOptions, CallbackDict
 from typing import Literal, Any
+from contextlib import suppress
+import asyncio
 import subprocess
 import datetime
 import requests
+import aiohttp
 import platform
 import hashlib
 import zipfile
@@ -44,7 +47,36 @@ def check_path_inside_minecraft_directory(minecraft_directory: str | os.PathLike
         raise FileOutsideMinecraftDirectory(os.path.abspath(path), os.path.abspath(minecraft_directory))
 
 
-def download_file(url: str, path: str, callback: CallbackDict = {}, sha1: str | None = None, lzma_compressed: bool | None = False, session: requests.sessions.Session | None = None, minecraft_directory: str | os.PathLike | None = None, overwrite: bool | None = False) -> bool:
+def _use_requests_download_backend() -> bool:
+    """
+    Allow tests or callers to force the legacy requests backend.
+    """
+    return os.environ.get("MINECRAFT_LAUNCHER_LIB_DOWNLOAD_BACKEND", "").lower() == "requests"
+
+
+def _should_use_async_download_backend() -> bool:
+    """
+    Use the async downloader unless callers explicitly force requests or we are already
+    inside a running event loop.
+    """
+    if _use_requests_download_backend():
+        return False
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return True
+
+    return False
+
+
+def _ensure_parent_dir(path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+def _download_file_requests(url: str, path: str, callback: CallbackDict = {}, sha1: str | None = None, lzma_compressed: bool | None = False, session: requests.sessions.Session | None = None, minecraft_directory: str | os.PathLike | None = None, overwrite: bool | None = False) -> bool:
     """
     Downloads a file into the given path. Check sha1 if given.
     """
@@ -58,10 +90,7 @@ def download_file(url: str, path: str, callback: CallbackDict = {}, sha1: str | 
         elif get_sha1_hash(path) == sha1:
             return False
 
-    try:
-        os.makedirs(os.path.dirname(path))
-    except Exception:
-        pass
+    _ensure_parent_dir(path)
 
     callback.get("setStatus", empty)("Download " + os.path.basename(path))
 
@@ -86,6 +115,112 @@ def download_file(url: str, path: str, callback: CallbackDict = {}, sha1: str | 
             raise InvalidChecksum(url, path, sha1, checksum)
 
     return True
+
+
+async def _download_file_aiohttp(url: str, path: str, callback: CallbackDict = {}, sha1: str | None = None, lzma_compressed: bool | None = False, session: aiohttp.ClientSession | None = None, minecraft_directory: str | os.PathLike | None = None, overwrite: bool | None = False, *, retries: int = 3) -> bool:
+    """
+    Async download implementation using aiohttp.
+    """
+    if minecraft_directory is not None:
+        check_path_inside_minecraft_directory(minecraft_directory, path)
+
+    if os.path.isfile(path) and not overwrite:
+        if sha1 is None:
+            return False
+        if get_sha1_hash(path) == sha1:
+            return False
+
+    _ensure_parent_dir(path)
+    callback.get("setStatus", empty)("Download " + os.path.basename(path))
+
+    close_session = False
+    if session is None:
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=30)
+        session = aiohttp.ClientSession(headers={"user-agent": get_user_agent()}, timeout=timeout)
+        close_session = True
+
+    tmp_path = f"{path}.download"
+    last_error: Exception | None = None
+
+    try:
+        for attempt in range(retries + 1):
+            try:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        if response.status in {408, 425, 429} or 500 <= response.status < 600:
+                            if attempt >= retries:
+                                return False
+                            await asyncio.sleep(0.25 * (2 ** attempt))
+                            continue
+                        return False
+
+                    if lzma_compressed:
+                        content = await response.read()
+                        data = lzma.decompress(content)
+                        with open(tmp_path, "wb") as f:
+                            f.write(data)
+                    else:
+                        with open(tmp_path, "wb") as f:
+                            async for chunk in response.content.iter_chunked(65536):
+                                if chunk:
+                                    f.write(chunk)
+
+                    os.replace(tmp_path, path)
+
+                    if sha1 is not None:
+                        checksum = get_sha1_hash(path)
+                        if checksum != sha1:
+                            raise InvalidChecksum(url, path, sha1, checksum)
+
+                    return True
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                last_error = exc
+                if attempt >= retries:
+                    raise
+                await asyncio.sleep(0.25 * (2 ** attempt))
+    finally:
+        if close_session:
+            await session.close()
+        with suppress(FileNotFoundError):
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+
+    if last_error is not None:
+        raise last_error
+
+    return False
+
+
+def download_file(url: str, path: str, callback: CallbackDict = {}, sha1: str | None = None, lzma_compressed: bool | None = False, session: requests.sessions.Session | None = None, minecraft_directory: str | os.PathLike | None = None, overwrite: bool | None = False) -> bool:
+    """
+    Downloads a file into the given path. Check sha1 if given.
+    """
+    if not _should_use_async_download_backend():
+        return _download_file_requests(url, path, callback, sha1, lzma_compressed, session, minecraft_directory, overwrite)
+
+    if session is not None and not isinstance(session, aiohttp.ClientSession):
+        # Preserve compatibility with callers that still pass a requests session.
+        return _download_file_requests(url, path, callback, sha1, lzma_compressed, session, minecraft_directory, overwrite)
+
+    return asyncio.run(_download_file_aiohttp(url, path, callback, sha1, lzma_compressed, session, minecraft_directory, overwrite))
+
+
+def create_download_session(max_connections: int | None = None) -> requests.sessions.Session:
+    """
+    Create a requests session tuned for concurrent downloads.
+    """
+    session = requests.session()
+
+    if max_connections is not None:
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=max_connections,
+            pool_maxsize=max_connections,
+            pool_block=True,
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+    return session
 
 
 def parse_single_rule(rule: ClientJsonRule, options: MinecraftOptions) -> bool:
