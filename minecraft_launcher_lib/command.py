@@ -70,6 +70,11 @@ def replace_arguments(argstr: str, versionData: ClientJson, path: str, options: 
     argstr = argstr.replace("${quickPlaySingleplayer}", options.get("quickPlaySingleplayer") or "{quickPlaySingleplayer}")
     argstr = argstr.replace("${quickPlayMultiplayer}", options.get("quickPlayMultiplayer") or "{quickPlayMultiplayer}")
     argstr = argstr.replace("${quickPlayRealms}", options.get("quickPlayRealms") or "{quickPlayRealms}")
+
+    # added by syaniclauncher team ;)
+    argstr = argstr.replace("${clientid}", str(options.get("clientid", "0")))
+    argstr = argstr.replace("${auth_xuid}", str(options.get("auth_xuid", "0")))
+
     return argstr
 
 
