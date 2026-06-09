@@ -28,6 +28,11 @@ class Neoforge(ModLoaderBase):
     def _normalize_minecraft_version(self, minecraft_version: str) -> str:
         "Turns the version string into a normal minecraft version"
         minecraft_version = minecraft_version.removesuffix(".0")
+        # Old Minecraft versions are 1.x (e.g. NeoForge 21.1 -> 1.21.1).
+        # Minecraft 1.21.11 was the last of this scheme; newer versions are
+        # year-based (e.g. 26.1, 26.1.2) and already complete, so don't prepend "1.".
+        if int(minecraft_version.split(".")[0]) >= 25:
+            return minecraft_version
         return f"1.{minecraft_version}"
 
     def get_minecraft_versions(self, stable_only: bool) -> list[str]:
