@@ -32,8 +32,15 @@ class Forge(ModLoaderBase):
         "Implements get_minecraft_versions() for Forge"
         version_dict: dict[str, bool] = {}
 
+        # This library only supports Minecraft 1.7.2 and newer
+        # Older versions not to be listed in minecraft versions
+        minimum_version = version_sort_key("1.7.2")
+
         for current_version in parse_maven_metadata(_MAVEN_METADATA_URL)["versions"]:
             current_minecraft_version, _ = current_version.split("-", 1)
+            # Skip Minecraft versions older than the minimum supported one
+            if version_sort_key(current_minecraft_version) < minimum_version:
+                continue
             version_dict[current_minecraft_version] = True
 
         version_list = list(version_dict.keys())
