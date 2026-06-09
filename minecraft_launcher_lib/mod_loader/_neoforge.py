@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2019-2025 JakobDev <jakobdev@gmx.de> and contributors
 # SPDX-License-Identifier: BSD-2-Clause
 from ..vanilla_launcher import do_vanilla_launcher_profiles_exists, create_empty_vanilla_launcher_profiles_file
-from .._helper import get_requests_response_cache, download_file, empty, SUBPROCESS_STARTUP_INFO
+from .._helper import get_requests_response_cache, download_file, version_sort_key, empty, SUBPROCESS_STARTUP_INFO
 from ._base import ModLoaderBase
 from ..types import CallbackDict
 import subprocess
@@ -44,7 +44,12 @@ class Neoforge(ModLoaderBase):
                 current_minecraft_version = _VERSION_REG_EX.match(current_version).group()  # type: ignore
                 version_dict[self._normalize_minecraft_version(current_minecraft_version)] = True
 
-        return list(version_dict.keys())
+        version_list = list(version_dict.keys())
+
+        # The versions are not sorted (scrambled), so sort with the newest first
+        version_list.sort(key=version_sort_key, reverse=True)
+
+        return version_list
 
     def get_loader_versions(self, minecraft_version: str, stable_only: bool) -> list[str]:
         "Implements get_loader_versions() for NeoForge"
@@ -58,8 +63,8 @@ class Neoforge(ModLoaderBase):
             if self._normalize_minecraft_version(current_minecraft_version) == minecraft_version:
                 version_list.append(current_version)
 
-        # The versions are sorted from oldest to newest but we want newest to oldest
-        version_list.reverse()
+        # The versions are not sorted (scrambled), so sort with the newest first
+        version_list.sort(key=version_sort_key, reverse=True)
 
         return version_list
 

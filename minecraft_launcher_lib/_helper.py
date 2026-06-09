@@ -39,6 +39,25 @@ def empty(arg: Any) -> None:
     pass
 
 
+_VERSION_SPLIT_REG_EX = re.compile(r"(\d+)")
+
+
+def version_sort_key(version: str) -> list[tuple[int, int | str]]:
+    """
+    Returns a sort key for version strings that sorts them naturally.
+    Numeric parts are compared as numbers, text parts alphabetically,
+    allowing versions like 1.21.11 to correctly sort before 1.21.10
+    (when used with reverse=True)
+    """
+    # Each chunk is wrapped in a (type_rank, value) tuple so numbers and text
+    # never get compared against each other (which would raise a TypeError).
+    return [
+        (1, int(chunk)) if chunk.isdigit() else (0, chunk.lower())
+        for chunk in _VERSION_SPLIT_REG_EX.split(version)
+        if chunk
+    ]
+
+
 def check_path_inside_minecraft_directory(minecraft_directory: str | os.PathLike, path: str | os.PathLike) -> None:
     """
     Raises a FileOutsideMinecraftDirectory if the Path is not in the given Directory

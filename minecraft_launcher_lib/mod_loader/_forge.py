@@ -1,7 +1,7 @@
 # This file is part of minecraft-launcher-lib (https://codeberg.org/JakobDev/minecraft-launcher-lib)
 # SPDX-FileCopyrightText: Copyright (c) 2019-2025 JakobDev <jakobdev@gmx.de> and contributors
 # SPDX-License-Identifier: BSD-2-Clause
-from .._helper import download_file, extract_file_from_zip, get_classpath_separator, get_library_path, get_jar_mainclass, parse_maven_metadata, empty, SUBPROCESS_STARTUP_INFO
+from .._helper import download_file, extract_file_from_zip, get_classpath_separator, get_library_path, get_jar_mainclass, parse_maven_metadata, version_sort_key, empty, SUBPROCESS_STARTUP_INFO
 from ..install import install_minecraft_version, install_libraries
 from .._internal_types.forge_types import ForgeInstallProfile
 from .._internal_types.shared_types import ClientJson
@@ -36,7 +36,12 @@ class Forge(ModLoaderBase):
             current_minecraft_version, _ = current_version.split("-", 1)
             version_dict[current_minecraft_version] = True
 
-        return list(version_dict.keys())
+        version_list = list(version_dict.keys())
+
+        # The maven metadata is not sorted (scrambled), so sort with the newest first
+        version_list.sort(key=version_sort_key, reverse=True)
+
+        return version_list
 
     def get_loader_versions(self, minecraft_version: str, stable_only: bool) -> list[str]:
         "Implements get_loader_versions() for Forge"
@@ -46,6 +51,9 @@ class Forge(ModLoaderBase):
             current_minecraft_version, current_forge_version = current_version.split("-", 1)
             if current_minecraft_version == minecraft_version:
                 version_list.append(current_forge_version)
+
+        # The maven metadata is not sorted (scrambled), so sort with the newest first
+        version_list.sort(key=version_sort_key, reverse=True)
 
         return version_list
 
