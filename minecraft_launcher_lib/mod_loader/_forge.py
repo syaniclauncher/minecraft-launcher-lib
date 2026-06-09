@@ -14,6 +14,7 @@ import zipfile
 import shutil
 import json
 import os
+import re
 
 _MAVEN_METADATA_URL = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
 
@@ -38,6 +39,9 @@ class Forge(ModLoaderBase):
 
         for current_version in parse_maven_metadata(_MAVEN_METADATA_URL)["versions"]:
             current_minecraft_version, _ = current_version.split("-", 1)
+            # Skip "_pre" Minecraft versions
+            if "_pre" in current_minecraft_version:
+                continue
             # Skip Minecraft versions older than the minimum supported one
             if version_sort_key(current_minecraft_version) < minimum_version:
                 continue
