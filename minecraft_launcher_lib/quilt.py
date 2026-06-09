@@ -202,7 +202,7 @@ def install_quilt(minecraft_version: str, minecraft_directory: str | os.PathLike
     install_minecraft_version(minecraft_version, path, callback=callback)
 
     # Fetch the version profile JSON directly from the meta API
-    callback.get("setStatus", empty)("Install quilt")
+    callback.get("setStatus", empty)("Installing quilt")
     quilt_minecraft_version = f"quilt-loader-{loader_version}-{minecraft_version}"
     profile_url = f"https://meta.quiltmc.org/v3/versions/loader/{minecraft_version}/{loader_version}/profile/json"
     data = get_requests_response_cache(profile_url).json()

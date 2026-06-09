@@ -35,7 +35,7 @@ def install_libraries(
 
     worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
     session = create_download_session(worker_count)
-    callback.get("setStatus", empty)("Download Libraries")
+    callback.get("setStatus", empty)("Downloading Libraries")
     callback.get("setMax", empty)(len(libraries) - 1)
 
     def download_library(
@@ -121,7 +121,7 @@ async def _install_libraries_async(
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=30)
     connector = aiohttp.TCPConnector(limit=worker_count, limit_per_host=worker_count, ttl_dns_cache=300)
     session = aiohttp.ClientSession(headers={"user-agent": get_user_agent()}, timeout=timeout, connector=connector)
-    callback.get("setStatus", empty)("Download Libraries")
+    callback.get("setStatus", empty)("Downloading Libraries")
     callback.get("setMax", empty)(len(libraries) - 1)
 
     async def download_library(i: ClientJsonLibrary) -> None:
@@ -197,7 +197,7 @@ def install_assets(
         asyncio.run(_install_assets_async(data, path, callback, max_workers))
         return
 
-    callback.get("setStatus", empty)("Download Assets")
+    callback.get("setStatus", empty)("Downloading Assets")
     worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
     session = create_download_session(worker_count)
 
@@ -236,7 +236,7 @@ async def _install_assets_async(
     """
     Async install of all assets using aiohttp.
     """
-    callback.get("setStatus", empty)("Download Assets")
+    callback.get("setStatus", empty)("Downloading Assets")
     worker_count = max_workers if max_workers is not None else min(32, (os.cpu_count() or 1) + 4)
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=30)
     connector = aiohttp.TCPConnector(limit=worker_count, limit_per_host=worker_count, ttl_dns_cache=300)
@@ -304,7 +304,7 @@ def do_version_install(versionid: str, path: str, callback: CallbackDict, url: s
 
     # Install java runtime if needed
     if "javaVersion" in versiondata:
-        callback.get("setStatus", empty)("Install java runtime")
+        callback.get("setStatus", empty)("Installing java runtime")
         install_jvm_runtime(versiondata["javaVersion"]["component"], path, callback=callback)
 
     callback.get("setStatus", empty)("Installation complete")

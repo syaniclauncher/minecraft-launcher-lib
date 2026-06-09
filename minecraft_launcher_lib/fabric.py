@@ -196,7 +196,7 @@ def install_fabric(minecraft_version: str, minecraft_directory: str | os.PathLik
     install_minecraft_version(minecraft_version, path, callback=callback)
 
     # Fetch the version profile JSON directly from the meta API
-    callback.get("setStatus", empty)("Install fabric")
+    callback.get("setStatus", empty)("Installing fabric")
     fabric_minecraft_version = f"fabric-loader-{loader_version}-{minecraft_version}"
     profile_url = f"https://meta.fabricmc.net/v2/versions/loader/{minecraft_version}/{loader_version}/profile/json"
     data = get_requests_response_cache(profile_url).json()

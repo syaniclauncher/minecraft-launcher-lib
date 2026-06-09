@@ -28,7 +28,7 @@ class Quilt(FabricQuiltBase):
 
     def install(self, minecraft_version: str, minecraft_directory: str, callback: CallbackDict, java: str, loader_version: str) -> None:
         "Implements install() for Quilt using the meta API"
-        callback.get("setStatus", empty)("Install quilt")
+        callback.get("setStatus", empty)("Installing quilt")
 
         # The meta API serves the same version profile JSON that the installer would write
         data = get_requests_response_cache(self.get_profile_url(minecraft_version, loader_version)).json()

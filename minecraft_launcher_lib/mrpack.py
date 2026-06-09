@@ -119,7 +119,7 @@ def install_mrpack(path: str | os.PathLike, minecraft_directory: str | os.PathLi
             index: MrpackIndex = json.load(f)
 
         # Download the files
-        callback.get("setStatus", empty)("Download mrpack files")
+        callback.get("setStatus", empty)("Downloading mrpack files")
         file_list = _filter_mrpack_files(index["files"], mrpack_install_options)
         callback.get("setMax", empty)(len(file_list))
         for count, file in enumerate(file_list):
@@ -132,7 +132,7 @@ def install_mrpack(path: str | os.PathLike, minecraft_directory: str | os.PathLi
             callback.get("setProgress", empty)(count + 1)
 
         # Extract the overrides
-        callback.get("setStatus", empty)("Extract overrides")
+        callback.get("setStatus", empty)("Extracting overrides")
         for zip_name in zf.namelist():
             # Check if the entry is in the overrides and if it is a file
             if (not zip_name.startswith("overrides/") and not zip_name.startswith("client-overrides/")) or zf.getinfo(zip_name).file_size == 0:

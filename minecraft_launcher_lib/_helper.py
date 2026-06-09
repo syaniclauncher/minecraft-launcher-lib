@@ -92,7 +92,7 @@ def _download_file_requests(url: str, path: str, callback: CallbackDict = {}, sh
 
     _ensure_parent_dir(path)
 
-    callback.get("setStatus", empty)("Download " + os.path.basename(path))
+    callback.get("setStatus", empty)("Downloading " + os.path.basename(path))
 
     if session is None:
         r = requests.get(url, stream=True, headers={"user-agent": get_user_agent()})
@@ -131,7 +131,7 @@ async def _download_file_aiohttp(url: str, path: str, callback: CallbackDict = {
             return False
 
     _ensure_parent_dir(path)
-    callback.get("setStatus", empty)("Download " + os.path.basename(path))
+    callback.get("setStatus", empty)("Downloading " + os.path.basename(path))
 
     close_session = False
     if session is None:
