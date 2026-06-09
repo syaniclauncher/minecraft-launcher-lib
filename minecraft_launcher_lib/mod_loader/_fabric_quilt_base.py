@@ -47,6 +47,10 @@ class FabricQuiltBase(ModLoaderBase):
         installer_version = parse_maven_metadata(f"{self._maven_url}/maven-metadata.xml")["latest"]
         return f"{self._maven_url}/{installer_version}/{self._loader_name}-installer-{installer_version}.jar"
 
+    def get_profile_url(self, minecraft_version: str, loader_version: str) -> str:
+        "Returns the URL to the version profile JSON served by the meta API"
+        return f"{self._loader_url}/{minecraft_version}/{loader_version}/profile/json"
+
     def get_installed_version(self, minecraft_version: str, loader_version: str) -> str:
         "Implements get_installed_version() for Fabric/Quilt"
         return f"{self._loader_name}-loader-{loader_version}-{minecraft_version}"

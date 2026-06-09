@@ -8,14 +8,13 @@
 
 fabric contains functions for dealing with the `Fabric modloader <https://fabricmc.net/>`_.
 """
-from ._helper import download_file, get_requests_response_cache, parse_maven_metadata, empty
-from .exceptions import VersionNotFound, UnsupportedVersion, ExternalProgramError
+from ._helper import get_requests_response_cache, parse_maven_metadata, check_path_inside_minecraft_directory, empty
+from .exceptions import VersionNotFound, UnsupportedVersion
 from .types import FabricMinecraftVersion, FabricLoader, CallbackDict
 from .install import install_minecraft_version
 from .utils import is_version_valid
-import subprocess
-import tempfile
 import warnings
+import json
 import os
 
 
@@ -196,23 +195,18 @@ def install_fabric(minecraft_version: str, minecraft_directory: str | os.PathLik
     # Make sure the Minecraft version is installed
     install_minecraft_version(minecraft_version, path, callback=callback)
 
-    # Get installer version
-    installer_version = get_latest_installer_version()
-    installer_download_url = f"https://maven.fabricmc.net/net/fabricmc/fabric-installer/{installer_version}/fabric-installer-{installer_version}.jar"
+    # Fetch the version profile JSON directly from the meta API
+    callback.get("setStatus", empty)("Install fabric")
+    fabric_minecraft_version = f"fabric-loader-{loader_version}-{minecraft_version}"
+    profile_url = f"https://meta.fabricmc.net/v2/versions/loader/{minecraft_version}/{loader_version}/profile/json"
+    data = get_requests_response_cache(profile_url).json()
+    data["id"] = fabric_minecraft_version
 
-    with tempfile.TemporaryDirectory(prefix="minecraft-launcher-lib-fabric-install-") as tempdir:
-        installer_path = os.path.join(tempdir, "fabric-installer.jar")
-
-        # Download the installer
-        download_file(installer_download_url, installer_path, callback=callback, overwrite=True)
-
-        # Run the installer see https://fabricmc.net/wiki/install#cli_installation
-        callback.get("setStatus", empty)("Running fabric installer")
-        command = ["java" if java is None else str(java), "-jar", installer_path, "client", "-dir", path, "-mcversion", minecraft_version, "-loader", loader_version, "-noprofile", "-snapshot"]
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if result.returncode != 0:
-            raise ExternalProgramError(command, result.stdout, result.stderr)
+    version_path = os.path.join(path, "versions", fabric_minecraft_version, f"{fabric_minecraft_version}.json")
+    check_path_inside_minecraft_directory(path, version_path)
+    os.makedirs(os.path.dirname(version_path), exist_ok=True)
+    with open(version_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
     # Install all libs of fabric
-    fabric_minecraft_version = f"fabric-loader-{loader_version}-{minecraft_version}"
     install_minecraft_version(fabric_minecraft_version, path, callback=callback)
