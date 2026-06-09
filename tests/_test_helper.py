@@ -83,6 +83,18 @@ def prepare_requests_mock(requests_mock: requests_mock.Mocker) -> None:
         {"version": "0.2", "separator": ",", "build": 42, "maven": "org.quiltmc:quilt-loader::0.2"},
     ])
 
+    # Version profile JSON served by the Fabric/Quilt meta APIs (replaces running the installer)
+    loader_profile = {
+        "id": "loader-profile",
+        "inheritsFrom": "test1",
+        "type": "release",
+        "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+        "arguments": {"game": [], "jvm": []},
+        "libraries": []
+    }
+    requests_mock.get("https://meta.fabricmc.net/v2/versions/loader/test1/testloader/profile/json", json=loader_profile)
+    requests_mock.get("https://meta.quiltmc.org/v3/versions/loader/test1/testloader/profile/json", json=loader_profile)
+
     online_release_version = read_test_json_file("versions/test1/test1.json")
     online_release_version["id"] = "online-release"
     online_release_version_bytes = json.dumps(online_release_version).encode("utf-8")

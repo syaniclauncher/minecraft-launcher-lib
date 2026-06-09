@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: BSD-2-Clause
 from ._test_helper import prepare_test_versions, prepare_requests_mock, get_test_callbacks
 import minecraft_launcher_lib
-import pytest_subprocess
 import pytest_subtests
 import requests_mock
 import platform
 import pathlib
 import pytest
 import shutil
+import json
 
 
 def test_mod_loader_fabric_get_id() -> None:
@@ -95,17 +95,12 @@ def test_mod_loader_fabric_quilt_get_installed_version(loader_id: str) -> None:
 
 
 @pytest.mark.parametrize("loader_id", ["fabric", "quilt"])
-def test_mod_loader_fabric_quilt_install(loader_id: str, monkeypatch: pytest.MonkeyPatch, subtests: pytest_subtests.SubTests, requests_mock: requests_mock.Mocker, tmp_path: pathlib.Path, fp: pytest_subprocess.fake_process.FakeProcess) -> None:
+def test_mod_loader_fabric_quilt_install(loader_id: str, monkeypatch: pytest.MonkeyPatch, subtests: pytest_subtests.SubTests, requests_mock: requests_mock.Mocker, tmp_path: pathlib.Path) -> None:
     fabric = minecraft_launcher_lib.mod_loader.get_mod_loader(loader_id)
 
-    requests_mock.get("minecraft-launcher-lib://testinstaller")
-
     monkeypatch.setattr(fabric, "is_minecraft_version_supported", lambda version: True if version == "test1" else False)
-    monkeypatch.setattr(fabric._base, "get_installer_url", lambda minecraft_version, loader_version: "minecraft-launcher-lib://testinstaller")
     monkeypatch.setattr(fabric, "get_latest_loader_version", lambda stable_only: "testloader")
     monkeypatch.setattr(platform, "system", lambda: "Linux")
-
-    fp.allow_unregistered(True)
 
     prepare_test_versions(tmp_path)
     prepare_requests_mock(requests_mock)
@@ -115,9 +110,12 @@ def test_mod_loader_fabric_quilt_install(loader_id: str, monkeypatch: pytest.Mon
         tmp_path / "versions" / f"{loader_id}-loader-testloader-test1" / f"{loader_id}-loader-testloader-test1.json")
 
     with subtests.test("Install"):
-        fp.register(["java", fp.any()])
-        fabric.install("test1", tmp_path, callback=get_test_callbacks())
-        assert fp.call_count(["java", fp.any()]) == 1
+        installed = fabric.install("test1", tmp_path, callback=get_test_callbacks())
+        assert installed == f"{loader_id}-loader-testloader-test1"
+        version_file = tmp_path / "versions" / installed / f"{installed}.json"
+        assert version_file.is_file()
+        with open(version_file, "r", encoding="utf-8") as f:
+            assert json.load(f)["id"] == installed
 
     with subtests.test("VersionNotFound"):
         with pytest.raises(minecraft_launcher_lib.exceptions.VersionNotFound):
