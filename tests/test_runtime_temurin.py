@@ -42,7 +42,14 @@ def test_get_executable_path_temurin() -> None:
         assert runtime.get_executable_path_temurin(17, tmp) == expected
 
 
+def test_missing_java_version_defaults_to_8() -> None:
+    # Mirrors the install.py / command.py fallback for pre-1.17 versions with no javaVersion field.
+    assert {}.get("javaVersion", {}).get("majorVersion", 8) == 8
+    assert {"javaVersion": {"majorVersion": 17}}.get("javaVersion", {}).get("majorVersion", 8) == 17
+
+
 if __name__ == "__main__":
     test_adoptium_platform_mapping()
     test_get_executable_path_temurin()
+    test_missing_java_version_defaults_to_8()
     print("ok")

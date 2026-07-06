@@ -302,10 +302,10 @@ def do_version_install(versionid: str, path: str, callback: CallbackDict, url: s
         check_path_inside_minecraft_directory(path, inherit_path)
         shutil.copyfile(os.path.join(path, "versions", versiondata["id"], versiondata["id"] + ".jar"), inherit_path)
 
-    # Install java runtime if needed
-    if "javaVersion" in versiondata:
-        callback.get("setStatus", empty)("Installing java runtime")
-        install_jvm_runtime_temurin(versiondata["javaVersion"]["majorVersion"], path, callback=callback)
+    # Always install embedded Java runtime (pre-1.17 sometimes has no javaVersion so Java 8 for those)
+    java_major = versiondata.get("javaVersion", {}).get("majorVersion", 8)
+    callback.get("setStatus", empty)("Installing java runtime")
+    install_jvm_runtime_temurin(java_major, path, callback=callback)
 
     callback.get("setStatus", empty)("Installation complete")
 

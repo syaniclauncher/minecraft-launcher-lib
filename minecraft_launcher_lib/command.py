@@ -203,17 +203,15 @@ def get_minecraft_command(version: str, minecraft_directory: str | os.PathLike, 
     classpath = get_libraries(data, path)
 
     command: list[str] = []
-    # Add Java executable
+    # Add Java executable. Explicit overrides win; otherwise use the embedded Temurin runtime.
     if "executablePath" in options:
         command.append(options["executablePath"])
-    elif "javaVersion" in data:
-        java_path = get_executable_path_temurin(data["javaVersion"]["majorVersion"], path)
-        if java_path is None:
-            command.append("java")
-        else:
-            command.append(java_path)
+    elif "defaultExecutablePath" in options:
+        command.append(options["defaultExecutablePath"])
     else:
-        command.append(options.get("defaultExecutablePath", "java"))
+        java_major = data.get("javaVersion", {}).get("majorVersion", 8)  # ponytail: pre-1.17 -> legacy Java 8
+        java_path = get_executable_path_temurin(java_major, path)
+        command.append(java_path if java_path is not None else "java")  # ponytail: "java" only if the embedded runtime is somehow missing
 
     if "jvmArguments" in options:
         command = command + options["jvmArguments"]
