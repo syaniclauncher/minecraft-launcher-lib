@@ -5,14 +5,17 @@
 mrpack allows you to install Modpacks from the `Mrpack Format <https://support.modrinth.com/en/articles/8802351-modrinth-modpack-format-mrpack>`_.
 You should also take a look at the :doc:`complete example </examples/Mrpack>`.
 """
-from ._helper import download_file, empty, check_path_inside_minecraft_directory
+from ._helper import download_file, empty, check_path_inside_minecraft_directory, create_download_session
 from .types import MrpackInformation, MrpackInstallOptions, CallbackDict
 from ._internal_types.mrpack_types import MrpackIndex, MrpackFile
 from .install import install_minecraft_version
 from .mod_loader import get_mod_loader
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 import json
 import os
+
+_MRPACK_DOWNLOAD_CONCURRENCY = 8
 
 
 def _filter_mrpack_files(file_list: list[MrpackFile], mrpack_install_options: MrpackInstallOptions) -> list[MrpackFile]:
@@ -72,6 +75,28 @@ def get_mrpack_information(path: str | os.PathLike) -> MrpackInformation:
             return information
 
 
+def _get_mrpack_file_path(modpack_directory: str, file: MrpackFile) -> str:
+    full_path = os.path.abspath(os.path.join(modpack_directory, file["path"]))
+    check_path_inside_minecraft_directory(modpack_directory, full_path)
+    return full_path
+
+
+def _install_mrpack_files(file_list: list[MrpackFile], modpack_directory: str, callback: CallbackDict) -> None:
+    session = create_download_session(_MRPACK_DOWNLOAD_CONCURRENCY)
+
+    def download_mrpack_file(file: MrpackFile) -> None:
+        download_file(file["downloads"][0], _get_mrpack_file_path(modpack_directory, file), sha1=file["hashes"]["sha1"], callback=callback, session=session)
+
+    try:
+        with ThreadPoolExecutor(max_workers=_MRPACK_DOWNLOAD_CONCURRENCY) as executor:
+            futures = [executor.submit(download_mrpack_file, file) for file in file_list]
+            for count, future in enumerate(as_completed(futures), start=1):
+                future.result()
+                callback.get("setProgress", empty)(count)
+    finally:
+        session.close()
+
+
 def install_mrpack(path: str | os.PathLike, minecraft_directory: str | os.PathLike, modpack_directory: str | os.PathLike | None = None, callback: CallbackDict | None = None, mrpack_install_options: MrpackInstallOptions | None = None) -> None:
     """
     Installs a .mrpack file
@@ -122,14 +147,7 @@ def install_mrpack(path: str | os.PathLike, minecraft_directory: str | os.PathLi
         callback.get("setStatus", empty)("Downloading mrpack files")
         file_list = _filter_mrpack_files(index["files"], mrpack_install_options)
         callback.get("setMax", empty)(len(file_list))
-        for count, file in enumerate(file_list):
-            full_path = os.path.abspath(os.path.join(modpack_directory, file["path"]))
-
-            check_path_inside_minecraft_directory(modpack_directory, full_path)
-
-            download_file(file["downloads"][0], full_path, sha1=file["hashes"]["sha1"], callback=callback)
-
-            callback.get("setProgress", empty)(count + 1)
+        _install_mrpack_files(file_list, modpack_directory, callback)
 
         # Extract the overrides
         callback.get("setStatus", empty)("Extracting overrides")
@@ -150,7 +168,7 @@ def install_mrpack(path: str | os.PathLike, minecraft_directory: str | os.PathLi
 
             check_path_inside_minecraft_directory(modpack_directory, full_path)
 
-            callback.get("setStatus", empty)(f"Extract {zip_name}]")
+            callback.get("setStatus", empty)(f"Extract {zip_name}")
 
             try:
                 os.makedirs(os.path.dirname(full_path))

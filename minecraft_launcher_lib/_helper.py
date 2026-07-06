@@ -22,6 +22,7 @@ import json
 import sys
 import re
 import os
+import time
 
 if os.name == "nt":
     info = subprocess.STARTUPINFO()  # type: ignore
@@ -95,7 +96,15 @@ def _ensure_parent_dir(path: str) -> None:
         os.makedirs(parent, exist_ok=True)
 
 
-def _download_file_requests(url: str, path: str, callback: CallbackDict = {}, sha1: str | None = None, lzma_compressed: bool | None = False, session: requests.sessions.Session | None = None, minecraft_directory: str | os.PathLike | None = None, overwrite: bool | None = False) -> bool:
+def _can_retry_download(status_code: int) -> bool:
+    return status_code in {408, 425, 429} or 500 <= status_code < 600
+
+
+def _get_download_backoff(attempt: int) -> float:
+    return 0.25 * (2 ** attempt)
+
+
+def _download_file_requests(url: str, path: str, callback: CallbackDict = {}, sha1: str | None = None, lzma_compressed: bool | None = False, session: requests.sessions.Session | None = None, minecraft_directory: str | os.PathLike | None = None, overwrite: bool | None = False, *, retries: int = 3) -> bool:
     """
     Downloads a file into the given path. Check sha1 if given.
     """
@@ -113,27 +122,50 @@ def _download_file_requests(url: str, path: str, callback: CallbackDict = {}, sh
 
     callback.get("setStatus", empty)("Downloading " + os.path.basename(path))
 
-    if session is None:
-        r = requests.get(url, stream=True, headers={"user-agent": get_user_agent()})
-    else:
-        r = session.get(url, stream=True, headers={"user-agent": get_user_agent()})
+    request_session = requests if session is None else session
+    tmp_path = f"{path}.download"
+    for attempt in range(retries + 1):
+        resume_position = 0
+        request_headers = {"user-agent": get_user_agent()}
+        if not lzma_compressed and os.path.isfile(tmp_path):
+            resume_position = os.path.getsize(tmp_path)
+            if resume_position > 0:
+                request_headers["Range"] = f"bytes={resume_position}-"
 
-    if r.status_code != 200:
-        return False
+        try:
+            r = request_session.get(url, stream=True, headers=request_headers)
+            if r.status_code not in {200, 206}:
+                if _can_retry_download(r.status_code) and attempt < retries:
+                    time.sleep(_get_download_backoff(attempt))
+                    continue
+                return False
 
-    with open(path, 'wb') as f:
-        r.raw.decode_content = True
-        if lzma_compressed:
-            f.write(lzma.decompress(r.content))
-        else:
-            shutil.copyfileobj(r.raw, f)
+            if lzma_compressed:
+                with open(tmp_path, "wb") as f:
+                    f.write(lzma.decompress(r.content))
+            else:
+                if r.status_code != 206 or resume_position == 0:
+                    resume_position = 0
+                file_mode = "ab" if resume_position > 0 and r.status_code == 206 else "wb"
+                with open(tmp_path, file_mode) as f:
+                    r.raw.decode_content = True
+                    shutil.copyfileobj(r.raw, f)
 
-    if sha1 is not None:
-        checksum = get_sha1_hash(path)
-        if checksum != sha1:
-            raise InvalidChecksum(url, path, sha1, checksum)
+            os.replace(tmp_path, path)
 
-    return True
+            if sha1 is not None:
+                checksum = get_sha1_hash(path)
+                if checksum != sha1:
+                    raise InvalidChecksum(url, path, sha1, checksum)
+
+            return True
+        except (requests.RequestException, OSError) as exc:
+            if attempt >= retries:
+                raise
+
+        time.sleep(_get_download_backoff(attempt))
+
+    return False
 
 
 async def _download_file_aiohttp(url: str, path: str, callback: CallbackDict = {}, sha1: str | None = None, lzma_compressed: bool | None = False, session: aiohttp.ClientSession | None = None, minecraft_directory: str | os.PathLike | None = None, overwrite: bool | None = False, *, retries: int = 3) -> bool:
@@ -163,13 +195,20 @@ async def _download_file_aiohttp(url: str, path: str, callback: CallbackDict = {
 
     try:
         for attempt in range(retries + 1):
+            resume_position = 0
+            request_headers = None
+            if not lzma_compressed and os.path.isfile(tmp_path):
+                resume_position = os.path.getsize(tmp_path)
+                if resume_position > 0:
+                    request_headers = {"Range": f"bytes={resume_position}-"}
+
             try:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        if response.status in {408, 425, 429} or 500 <= response.status < 600:
+                async with session.get(url, headers=request_headers) as response:
+                    if response.status not in {200, 206}:
+                        if _can_retry_download(response.status):
                             if attempt >= retries:
                                 return False
-                            await asyncio.sleep(0.25 * (2 ** attempt))
+                            await asyncio.sleep(_get_download_backoff(attempt))
                             continue
                         return False
 
@@ -179,7 +218,10 @@ async def _download_file_aiohttp(url: str, path: str, callback: CallbackDict = {
                         with open(tmp_path, "wb") as f:
                             f.write(data)
                     else:
-                        with open(tmp_path, "wb") as f:
+                        if response.status != 206 or resume_position == 0:
+                            resume_position = 0
+                        file_mode = "ab" if resume_position > 0 and response.status == 206 else "wb"
+                        with open(tmp_path, file_mode) as f:
                             async for chunk in response.content.iter_chunked(65536):
                                 if chunk:
                                     f.write(chunk)
@@ -196,7 +238,7 @@ async def _download_file_aiohttp(url: str, path: str, callback: CallbackDict = {
                 last_error = exc
                 if attempt >= retries:
                     raise
-                await asyncio.sleep(0.25 * (2 ** attempt))
+                await asyncio.sleep(_get_download_backoff(attempt))
     finally:
         if close_session:
             await session.close()
