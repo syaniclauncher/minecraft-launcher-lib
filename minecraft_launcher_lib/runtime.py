@@ -7,16 +7,20 @@ import aiohttp
 from ._helper import get_user_agent, download_file, empty, get_sha1_hash, check_path_inside_minecraft_directory, get_client_json, create_download_session, _download_file_aiohttp, _should_use_async_download_backend
 from ._internal_types.runtime_types import RuntimeListJson, PlatformManifestJson, _PlatformManifestJsonFile
 from .types import CallbackDict, JvmRuntimeInformation, VersionRuntimeInformation
-from .exceptions import VersionNotFound, PlatformNotSupported
+from .exceptions import VersionNotFound, PlatformNotSupported, InvalidChecksum
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 import subprocess
 import datetime
 import requests
 import platform
+import hashlib
+import tarfile
+import zipfile
 import os
 
 _JVM_MANIFEST_URL = "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json"
+_ADOPTIUM_ASSETS_URL = "https://api.adoptium.net/v3/assets/latest/{major}/hotspot"
 
 
 def _get_jvm_platform_string() -> str:
@@ -79,6 +83,155 @@ def get_installed_jvm_runtimes(minecraft_directory: str | os.PathLike) -> list[s
     except FileNotFoundError:
         return []
 
+
+def _get_adoptium_platform() -> tuple[str, str]:
+    """Return (os, architecture) as the Adoptium API identifies this machine."""
+    match platform.system():
+        case "Windows":
+            os_name = "windows"
+        case "Linux":
+            os_name = "linux"
+        case "Darwin":
+            os_name = "mac"
+        case _:
+            os_name = "linux"
+
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64", "x64"):
+        arch = "x64"
+    elif machine in ("aarch64", "arm64"):
+        arch = "aarch64"
+    elif machine in ("i386", "i686", "x86"):
+        arch = "x86"
+    elif machine.startswith("arm"):
+        arch = "arm"
+    else:
+        arch = "x64"  # ponytail: sane default; add mapping if a new arch shows up
+    return os_name, arch
+
+
+def _sha256_hash(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _extract_runtime_archive(archive_path: str, dest: str, minecraft_directory: str | os.PathLike, is_zip: bool) -> str:
+    """Extract a Temurin archive into dest, guarding every member against path traversal. Returns the single top-level directory name."""
+    tops: set[str] = set()
+    if is_zip:
+        with zipfile.ZipFile(archive_path) as zf:
+            for name in zf.namelist():
+                check_path_inside_minecraft_directory(minecraft_directory, os.path.join(dest, name))
+                top = name.split("/", 1)[0]
+                if top:
+                    tops.add(top)
+            zf.extractall(dest)
+    else:
+        with tarfile.open(archive_path, "r:gz") as tf:
+            for member in tf.getmembers():
+                check_path_inside_minecraft_directory(minecraft_directory, os.path.join(dest, member.name))
+                top = member.name.split("/", 1)[0]
+                if top:
+                    tops.add(top)
+            tf.extractall(dest)  # ponytail: manual per-member guard above covers <3.12 (no filter='data')
+
+    # Temurin archives always have exactly one top-level dir (e.g. jdk-17.0.19+10-jre)
+    assert len(tops) == 1, f"unexpected Temurin archive layout: {tops}"
+    return tops.pop()
+
+
+def install_jvm_runtime_temurin(
+        major_version: int,
+        minecraft_directory: str | os.PathLike,
+        callback: CallbackDict | None = None) -> None:
+    """
+    Installs a Temurin (Eclipse Adoptium) JRE for the given Java major version.
+
+    This is the Temurin equivalent of :func:`install_jvm_runtime` and is keyed by Java major
+    version (e.g. ``17``) rather than by Mojang's runtime component name.
+
+    Example:
+
+    .. code:: python
+
+        minecraft_directory = minecraft_launcher_lib.utils.get_minecraft_directory()
+        minecraft_launcher_lib.runtime.install_jvm_runtime_temurin(17, minecraft_directory)
+
+    :param major_version: The Java major version (e.g. 8, 17, 21)
+    :param minecraft_directory: The path to your Minecraft directory
+    :param callback: the same dict as for :func:`~minecraft_launcher_lib.install.install_minecraft_version`
+    :raises VersionNotFound: No Temurin JRE is available for this version/platform
+    :raises FileOutsideMinecraftDirectory: A File should be placed outside the given Minecraft directory
+    """
+    if callback is None:
+        callback = {}
+
+    os_name, arch = _get_adoptium_platform()
+    callback.get("setStatus", empty)(f"Fetching Temurin JRE {major_version}")
+    response = requests.get(
+        _ADOPTIUM_ASSETS_URL.format(major=major_version),
+        params={"os": os_name, "architecture": arch, "image_type": "jre"},
+        headers={"user-agent": get_user_agent()},
+    )
+    assets = response.json()
+    if not assets:
+        raise VersionNotFound(f"temurin-{major_version}")
+
+    package = assets[0]["binary"]["package"]
+    platform_string = _get_jvm_platform_string()
+    base_path = os.path.join(minecraft_directory, "runtime", f"temurin-{major_version}", platform_string)
+    is_zip = package["name"].endswith(".zip")
+    archive_path = os.path.join(base_path, "_temurin.zip" if is_zip else "_temurin.tar.gz")
+    check_path_inside_minecraft_directory(minecraft_directory, archive_path)
+
+    # sha1=None + overwrite=True: always fetch fresh, then verify the SHA-256 Adoptium gives us
+    download_file(package["link"], archive_path, callback=callback, minecraft_directory=minecraft_directory, overwrite=True)
+    checksum = _sha256_hash(archive_path)
+    if checksum != package["checksum"]:
+        os.remove(archive_path)
+        raise InvalidChecksum(package["link"], archive_path, package["checksum"], checksum)
+
+    callback.get("setStatus", empty)(f"Extracting Temurin JRE {major_version}")
+    root_dir = _extract_runtime_archive(archive_path, base_path, minecraft_directory, is_zip)
+    os.remove(archive_path)
+
+    marker_path = os.path.join(base_path, ".temurin")
+    check_path_inside_minecraft_directory(minecraft_directory, marker_path)
+    with open(marker_path, "w", encoding="utf-8") as f:
+        f.write(root_dir)
+
+
+def get_executable_path_temurin(major_version: int, minecraft_directory: str | os.PathLike) -> str | None:
+    """
+    Returns the path to the java executable of a Temurin JRE installed by :func:`install_jvm_runtime_temurin`. Returns None if none is found.
+
+    :param major_version: The Java major version (e.g. 17)
+    :param minecraft_directory: The path to your Minecraft directory
+    """
+    base_path = os.path.join(minecraft_directory, "runtime", f"temurin-{major_version}", _get_jvm_platform_string())
+    try:
+        with open(os.path.join(base_path, ".temurin"), encoding="utf-8") as f:
+            root_dir = f.read().strip()
+    except FileNotFoundError:
+        return None
+
+    for java_path in (
+        os.path.join(base_path, root_dir, "bin", "java"),                          # Linux / Windows (+ .exe below)
+        os.path.join(base_path, root_dir, "Contents", "Home", "bin", "java"),      # macOS
+    ):
+        if os.path.isfile(java_path):
+            return java_path
+        elif os.path.isfile(java_path + ".exe"):
+            return java_path + ".exe"
+    return None
+
+
+''' 
+
+replaced by Temurin (install_jvm_runtime_temurin / get_executable_path_temurin). Old Mojang runtime install kept for reference.
 
 def install_jvm_runtime(
         jvm_version: str,
@@ -285,6 +438,7 @@ def get_executable_path(jvm_version: str, minecraft_directory: str | os.PathLike
         return java_path
     else:
         return None
+'''  # end Mojang runtime reference block
 
 
 def get_jvm_runtime_information(jvm_version: str) -> JvmRuntimeInformation:

@@ -4,7 +4,7 @@
 "command contains the function for creating the minecraft command"
 from ._helper import parse_rule_list, inherit_json, get_classpath_separator, get_library_path
 from ._internal_types.shared_types import ClientJson, ClientJsonArgumentRule
-from .runtime import get_executable_path
+from .runtime import get_executable_path_temurin
 from .exceptions import VersionNotFound
 from .utils import get_library_version
 from .types import MinecraftOptions
@@ -207,7 +207,7 @@ def get_minecraft_command(version: str, minecraft_directory: str | os.PathLike, 
     if "executablePath" in options:
         command.append(options["executablePath"])
     elif "javaVersion" in data:
-        java_path = get_executable_path(data["javaVersion"]["component"], path)
+        java_path = get_executable_path_temurin(data["javaVersion"]["majorVersion"], path)
         if java_path is None:
             command.append("java")
         else:

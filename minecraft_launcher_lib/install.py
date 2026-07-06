@@ -10,7 +10,7 @@ from .natives import extract_natives_file, get_natives
 from ._internal_types.install_types import AssetsJson
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
-from .runtime import install_jvm_runtime
+from .runtime import install_jvm_runtime_temurin
 from .exceptions import VersionNotFound
 from .types import CallbackDict
 import requests
@@ -305,7 +305,7 @@ def do_version_install(versionid: str, path: str, callback: CallbackDict, url: s
     # Install java runtime if needed
     if "javaVersion" in versiondata:
         callback.get("setStatus", empty)("Installing java runtime")
-        install_jvm_runtime(versiondata["javaVersion"]["component"], path, callback=callback)
+        install_jvm_runtime_temurin(versiondata["javaVersion"]["majorVersion"], path, callback=callback)
 
     callback.get("setStatus", empty)("Installation complete")
 
